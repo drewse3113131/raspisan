@@ -17,6 +17,7 @@ logging.basicConfig(level=logging.INFO)
 
 ADMIN_ID = 8275952252
 STATS_FILE = os.path.join(os.path.dirname(__file__), "stats.json")
+BROADCAST_PENDING = set()  # id админов ожидающих сообщение для рассылки
 
 BELLS_TEXT = (
     "🔔 <b>Расписание звонков</b>\n\n"
@@ -402,6 +403,85 @@ async def back_cb(cb: CallbackQuery):
         date_str = dates[int(date_idx)] if dates else ""
         await safe_edit(cb, f"{cfg['emoji']} <b>{cfg['name']} • {date_str} • {course}</b>\n<i>выбери группу:</i>", groups_kb(campus_key, date_idx, course))
 
+async def broadcast_cmd(message: Message):
+    if message.from_user.id != ADMIN_ID:
+        await message.answer("⛔ Только для админа")
+        return
+    # если команда с текстом: /broadcast Текст -> сразу рассылаем
+    text = message.text or ""
+    # убираем команду
+    parts = text.split(maxsplit=1)
+    if len(parts) > 1 and parts[1].strip():
+        # сразу рассылка текста
+        msg_text = parts[1].strip()
+        data = _load_stats()
+        users = list(data["users"].keys())
+        if not users:
+            await message.answer("📭 База пуста, некому слать.")
+            return
+        await message.answer(f"📢 Начинаю рассылку на <b>{len(users)}</b> юзеров...\nТекст: {msg_text[:100]}", parse_mode=ParseMode.HTML)
+        sent = 0
+        failed = 0
+        for uid in users:
+            try:
+                await message.bot.send_message(chat_id=int(uid), text=msg_text, parse_mode=ParseMode.HTML)
+                sent += 1
+                await asyncio.sleep(0.05)
+            except Exception as e:
+                failed += 1
+                logging.warning(f"broadcast to {uid} failed: {e}")
+        await message.answer(f"✅ Готово\nОтправлено: {sent}\nОшибок: {failed}")
+        return
+    # иначе ждем следующее сообщение
+    BROADCAST_PENDING.add(message.from_user.id)
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Отмена", callback_data="broadcast_cancel")]])
+    await message.answer(
+        "📢 <b>Режим рассылки</b>\n\n"
+        "Отправь мне любое сообщение (текст, фото, видео, документ, голосовое) — я разошлю его всем юзерам.\n"
+        "Поддерживается HTML-разметка.\n\n"
+        "<i>Нажми Отмена если передумал.</i>",
+        reply_markup=kb, parse_mode=ParseMode.HTML
+    )
+
+async def broadcast_cancel_cb(cb: CallbackQuery):
+    BROADCAST_PENDING.discard(cb.from_user.id)
+    await cb.answer("Отменено")
+    await safe_edit(cb, "❌ Рассылка отменена", campus_kb(cb.from_user.id))
+
+async def broadcast_content_handler(message: Message):
+    if message.from_user.id != ADMIN_ID or message.from_user.id not in BROADCAST_PENDING:
+        return
+    # если это команда - не считаем контентом (кроме /cancel)
+    if message.text and message.text.startswith("/"):
+        if message.text.strip() == "/cancel":
+            BROADCAST_PENDING.discard(message.from_user.id)
+            await message.answer("❌ Рассылка отменена")
+            return
+        return
+    BROADCAST_PENDING.discard(message.from_user.id)
+    data = _load_stats()
+    users = list(data["users"].keys())
+    if not users:
+        await message.answer("📭 База пуста, некому слать.")
+        return
+    await message.answer(f"📢 Начинаю рассылку на <b>{len(users)}</b> юзеров...", parse_mode=ParseMode.HTML)
+    sent = 0
+    failed = 0
+    # показываем прогресс каждые 20
+    for idx, uid in enumerate(users, 1):
+        try:
+            await message.bot.copy_message(chat_id=int(uid), from_chat_id=message.chat.id, message_id=message.message_id)
+            sent += 1
+        except Exception as e:
+            failed += 1
+            logging.warning(f"broadcast copy to {uid} failed: {e}")
+        await asyncio.sleep(0.05)
+        if idx % 25 == 0:
+            try:
+                await message.bot.send_message(ADMIN_ID, f"⏳ Прогресс: {idx}/{len(users)}")
+            except: pass
+    await message.answer(f"✅ <b>Рассылка завершена</b>\nОтправлено: <b>{sent}</b>\nОшибок: <b>{failed}</b>", parse_mode=ParseMode.HTML)
+
 async def cmd_schedule(message: Message):
     _log_start(message.from_user)
     await message.answer("👇 Выбери корпус:\n\n👨‍💻 <i>Создатель бота — @hohkam</i>", reply_markup=campus_kb(message.from_user.id), parse_mode=ParseMode.HTML)
@@ -412,6 +492,11 @@ def main():
         return
     bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     dp = Dispatcher()
+    dp.message.register(broadcast_cmd, Command("broadcast"))
+    dp.message.register(broadcast_cmd, Command("sendall"))
+    dp.message.register(broadcast_cmd, Command("announce"))
+    dp.message.register(broadcast_cmd, Command("rassilka"))
+    dp.message.register(broadcast_content_handler, lambda m: m.from_user and m.from_user.id == ADMIN_ID and m.from_user.id in BROADCAST_PENDING)
     dp.message.register(start_handler, CommandStart())
     dp.message.register(cmd_schedule, Command("schedule"))
     dp.message.register(cmd_schedule, Command("rasp"))
@@ -422,6 +507,7 @@ def main():
     dp.callback_query.register(about_handler, F.data == "about")
     dp.callback_query.register(bells_handler, F.data == "bells")
     dp.callback_query.register(stats_handler, F.data == "stats")
+    dp.callback_query.register(broadcast_cancel_cb, F.data == "broadcast_cancel")
     dp.callback_query.register(campus_cb, F.data.startswith("campus:"))
     dp.callback_query.register(date_cb, F.data.startswith("date:"))
     dp.callback_query.register(course_cb, F.data.startswith("course:"))
