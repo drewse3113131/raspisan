@@ -14,18 +14,29 @@ def _fetch_csv(sid, gid):
     data = urllib.request.urlopen(url, timeout=15).read().decode("utf-8")
     return data
 
+RU_MONTHS = (
+    r"(?:январ[ьяе]|феврал[ьяе]|март[ае]?|апрел[ьяе]|ма[яйе]|июн[ьяе]|"
+    r"июл[ьяе]|август[ае]?|сентябр[ьяе]|октябр[ьяе]|ноябр[ьяе]|декабр[ьяе])"
+)
+
 def _extract_date(text: str):
-    # ищем "01 сентября", "04 сентября ПЯТНИЦА", "07 сентября (ПОНЕДЕЛЬНИК)", "05 сентября 2026 г.(СУББОТА)"
-    m = re.search(r"(\d{1,2}\s+сентября[^\n,]*)", text, re.I)
+    # ищем дату с месяцем: "01 сентября", "05 октября (ПОНЕДЕЛЬНИК)", "06 октября 2026 г.(ВТОРНИК)" и т.д.
+    m = re.search(rf"(\d{{1,2}}\s+{RU_MONTHS}[^\n,]*)", text, re.I)
     if m:
         s = m.group(1).strip().strip(' "').strip()
-        # убрать лишнее "(очная форма обучения)" - не попадает
+        # убрать лишнее "(очная форма обучения)"
+        s = re.sub(r"\(?\s*очная\s+форма[^\)]*\)?", "", s, flags=re.I).strip()
         # нормализуем двойные пробелы
         s = re.sub(r"\s+", " ", s)
         return s
-    m2 = re.search(r"на\s+(\d{1,2}\s+[а-яА-ЯёЁ]+[^\n]*)", text, re.I)
+    m2 = re.search(rf"на\s+(\d{{1,2}}\s+{RU_MONTHS}[^\n,]*)", text, re.I)
     if m2:
-        return m2.group(1).strip()
+        s = m2.group(1).strip().strip(' "').strip()
+        s = re.sub(r"\s+", " ", s)
+        return s
+    m3 = re.search(r"на\s+(\d{1,2}\s+[а-яА-ЯёЁ]+[^\n]*)", text, re.I)
+    if m3:
+        return m3.group(1).strip()
     return ""
 
 def parse_campus_multi(campus_key: str):
@@ -64,15 +75,13 @@ def parse_campus_multi(campus_key: str):
         joined = " ".join(row)
         low_joined = joined.lower()
 
-        # детект даты: строка с "сентября" или "корректировка" + дата
+        # детект даты: строка с месяцем или датой
         is_date_row = False
         date_candidate = ""
-        if "сентября" in low_joined:
+        if re.search(RU_MONTHS, low_joined):
             date_candidate = _extract_date(joined)
             if date_candidate:
                 is_date_row = True
-        # строка "КОРРЕКТИРОВКА РАСПИСАНИЯ" сама по себе не дата, но следом будет дата
-        # поэтому чекаем именно наличие сентября
 
         if is_date_row:
             # новая дата — заводим новый день

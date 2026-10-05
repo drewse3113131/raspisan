@@ -16,8 +16,18 @@ from parser import get_dates, get_courses, get_groups, get_schedule, format_sche
 logging.basicConfig(level=logging.INFO)
 
 ADMIN_ID = 8275952252
+ADMIN_IDS = {8275952252, 8203111503}
 STATS_FILE = os.path.join(os.path.dirname(__file__), "stats.json")
 BROADCAST_PENDING = set()  # id админов ожидающих сообщение для рассылки
+
+def is_admin(user_id) -> bool:
+    if not user_id:
+        return False
+    try:
+        return int(user_id) in ADMIN_IDS
+    except:
+        return False
+
 
 BELLS_TEXT = (
     "🔔 <b>Расписание звонков</b>\n\n"
@@ -140,6 +150,13 @@ _load_env(".env")
 _load_env("C:\\Users\\user\\Desktop\\bot\\.env")
 _load_env(os.path.join(os.path.dirname(__file__), ".env"))
 
+_admin_env = os.getenv("ADMIN_ID") or os.getenv("ADMIN_IDS") or ""
+if _admin_env:
+    for _a in _admin_env.replace(";", ",").split(","):
+        _a = _a.strip()
+        if _a.isdigit():
+            ADMIN_IDS.add(int(_a))
+
 TOKEN = BOT_TOKEN or os.getenv("BOT_TOKEN") or ""
 
 def campus_kb(user_id=None):
@@ -149,9 +166,18 @@ def campus_kb(user_id=None):
     buttons.append([InlineKeyboardButton(text="🔔 Расписание звонков", callback_data="bells")])
     buttons.append([InlineKeyboardButton(text="ℹ️ О боте", callback_data="about")])
     buttons.append([InlineKeyboardButton(text="👨‍💻 Создатель бота — @hohkam", url="https://t.me/hohkam")])
-    if user_id == ADMIN_ID:
-        buttons.append([InlineKeyboardButton(text="📊 Статистика", callback_data="stats")])
+    if is_admin(user_id):
+        buttons.append([InlineKeyboardButton(text="👑 Админ-панель", callback_data="admin_panel")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+def admin_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📢 Рассылка (сообщение всем)", callback_data="admin_broadcast")],
+        [InlineKeyboardButton(text="📊 Статистика бота", callback_data="stats")],
+        [InlineKeyboardButton(text="🔄 Сбросить кэш расписания", callback_data="admin_clear_cache")],
+        [InlineKeyboardButton(text="🏠 Главное меню", callback_data="back:campus")],
+    ])
+
 
 def bells_kb(user_id=None):
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -230,7 +256,7 @@ async def bells_cmd(message: Message):
     await message.answer(BELLS_TEXT, reply_markup=bells_kb(message.from_user.id), parse_mode=ParseMode.HTML)
 
 async def stats_handler(cb: CallbackQuery):
-    if cb.from_user.id != ADMIN_ID:
+    if not is_admin(cb.from_user.id):
         await cb.answer("⛔ Только для админа", show_alert=True)
         return
     await cb.answer()
@@ -263,13 +289,15 @@ async def stats_handler(cb: CallbackQuery):
     if len(txt) > 4000:
         txt = txt[:4000] + "\n<i>...обрезано</i>"
     kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📢 Рассылка всем", callback_data="admin_broadcast")],
         [InlineKeyboardButton(text="🔄 Обновить", callback_data="stats")],
+        [InlineKeyboardButton(text="👑 Админ-панель", callback_data="admin_panel")],
         [InlineKeyboardButton(text="🏠 Главное меню", callback_data="back:campus")],
     ])
     await safe_edit(cb, txt, kb)
 
 async def stats_cmd(message: Message):
-    if message.from_user.id != ADMIN_ID:
+    if not is_admin(message.from_user.id):
         await message.answer("⛔ Только для админа")
         return
     data = _load_stats()
@@ -301,9 +329,12 @@ async def stats_cmd(message: Message):
     if len(txt) > 4000:
         txt = txt[:4000] + "\n<i>...обрезано</i>"
     kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📢 Рассылка всем", callback_data="admin_broadcast")],
+        [InlineKeyboardButton(text="👑 Админ-панель", callback_data="admin_panel")],
         [InlineKeyboardButton(text="🏠 Главное меню", callback_data="back:campus")],
     ])
     await message.answer(txt, reply_markup=kb, parse_mode=ParseMode.HTML)
+
 
 async def campus_cb(cb: CallbackQuery):
     _, campus_key = cb.data.split(":",1)
@@ -403,8 +434,71 @@ async def back_cb(cb: CallbackQuery):
         date_str = dates[int(date_idx)] if dates else ""
         await safe_edit(cb, f"{cfg['emoji']} <b>{cfg['name']} • {date_str} • {course}</b>\n<i>выбери группу:</i>", groups_kb(campus_key, date_idx, course))
 
+async def admin_panel_handler(cb: CallbackQuery):
+    if not is_admin(cb.from_user.id):
+        await cb.answer("⛔ Только для админа", show_alert=True)
+        return
+    await cb.answer()
+    data = _load_stats()
+    users_cnt = len(data.get("users", {}))
+    txt = (
+        "👑 <b>Панель администратора</b>\n\n"
+        f"👥 Пользователей в базе: <b>{users_cnt}</b>\n"
+        f"▶️ Всего запусков: <b>{data.get('total_starts', 0)}</b>\n"
+        f"👁️ Просмотров расписания: <b>{data.get('total_views', 0)}</b>\n\n"
+        "Выбери нужный раздел:"
+    )
+    await safe_edit(cb, txt, admin_kb())
+
+async def admin_cmd(message: Message):
+    if not is_admin(message.from_user.id):
+        await message.answer("⛔ Только для админа")
+        return
+    data = _load_stats()
+    users_cnt = len(data.get("users", {}))
+    txt = (
+        "👑 <b>Панель администратора</b>\n\n"
+        f"👥 Пользователей в базе: <b>{users_cnt}</b>\n"
+        f"▶️ Всего запусков: <b>{data.get('total_starts', 0)}</b>\n"
+        f"👁️ Просмотров расписания: <b>{data.get('total_views', 0)}</b>\n\n"
+        "Выбери нужный раздел:"
+    )
+    await message.answer(txt, reply_markup=admin_kb(), parse_mode=ParseMode.HTML)
+
+async def admin_clear_cache_cb(cb: CallbackQuery):
+    if not is_admin(cb.from_user.id):
+        await cb.answer("⛔ Только для админа", show_alert=True)
+        return
+    from parser import _cache
+    _cache.clear()
+    await cb.answer("✅ Кэш расписания очищен!", show_alert=True)
+
+async def admin_broadcast_cb(cb: CallbackQuery):
+    if not is_admin(cb.from_user.id):
+        await cb.answer("⛔ Только для админа", show_alert=True)
+        return
+    await cb.answer()
+    BROADCAST_PENDING.add(cb.from_user.id)
+    data = _load_stats()
+    users_count = len(data.get("users", {}))
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="❌ Отмена", callback_data="broadcast_cancel")],
+        [InlineKeyboardButton(text="👑 В админку", callback_data="admin_panel")],
+    ])
+    txt = (
+        "📢 <b>Режим рассылки сообщений</b>\n\n"
+        "Отправь прямо сейчас сообщение, которое нужно переслать <b>всем пользователям</b> бота.\n\n"
+        "<b>Поддерживается:</b>\n"
+        "• Текст (с форматированием HTML/ссылками)\n"
+        "• Фото, видео, кружочки, голосовые, документы\n"
+        "• Пересланные сообщения\n\n"
+        f"👥 Получателей в базе: <b>{users_count}</b>\n\n"
+        "<i>Нажми кнопку ниже для отмены или отправь /cancel.</i>"
+    )
+    await safe_edit(cb, txt, kb)
+
 async def broadcast_cmd(message: Message):
-    if message.from_user.id != ADMIN_ID:
+    if not is_admin(message.from_user.id):
         await message.answer("⛔ Только для админа")
         return
     # если команда с текстом: /broadcast Текст -> сразу рассылаем
@@ -417,57 +511,74 @@ async def broadcast_cmd(message: Message):
         data = _load_stats()
         users = list(data["users"].keys())
         if not users:
-            await message.answer("📭 База пуста, некому слать.")
+            await message.answer("📭 База пуста, некому слать.", reply_markup=admin_kb())
             return
-        await message.answer(f"📢 Начинаю рассылку на <b>{len(users)}</b> юзеров...\nТекст: {msg_text[:100]}", parse_mode=ParseMode.HTML)
+        status_msg = await message.answer(f"📢 Начинаю рассылку на <b>{len(users)}</b> юзеров...\nТекст: {msg_text[:100]}", parse_mode=ParseMode.HTML)
         sent = 0
         failed = 0
-        for uid in users:
+        for idx, uid in enumerate(users, 1):
             try:
                 await message.bot.send_message(chat_id=int(uid), text=msg_text, parse_mode=ParseMode.HTML)
                 sent += 1
-                await asyncio.sleep(0.05)
             except Exception as e:
                 failed += 1
                 logging.warning(f"broadcast to {uid} failed: {e}")
-        await message.answer(f"✅ Готово\nОтправлено: {sent}\nОшибок: {failed}")
+            await asyncio.sleep(0.05)
+            if idx % 25 == 0:
+                try:
+                    await status_msg.edit_text(f"⏳ Прогресс: <b>{idx}/{len(users)}</b>", parse_mode=ParseMode.HTML)
+                except: pass
+        await message.answer(
+            f"✅ <b>Рассылка завершена!</b>\n\n"
+            f"📨 Успешно отправлено: <b>{sent}</b>\n"
+            f"❌ Ошибок / заблокировали: <b>{failed}</b>\n"
+            f"👥 Всего в базе: <b>{len(users)}</b>",
+            reply_markup=admin_kb(),
+            parse_mode=ParseMode.HTML
+        )
         return
     # иначе ждем следующее сообщение
     BROADCAST_PENDING.add(message.from_user.id)
-    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Отмена", callback_data="broadcast_cancel")]])
+    data = _load_stats()
+    users_count = len(data.get("users", {}))
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="❌ Отмена", callback_data="broadcast_cancel")],
+        [InlineKeyboardButton(text="👑 В админку", callback_data="admin_panel")],
+    ])
     await message.answer(
-        "📢 <b>Режим рассылки</b>\n\n"
-        "Отправь мне любое сообщение (текст, фото, видео, документ, голосовое) — я разошлю его всем юзерам.\n"
-        "Поддерживается HTML-разметка.\n\n"
-        "<i>Нажми Отмена если передумал.</i>",
+        "📢 <b>Режим рассылки сообщений</b>\n\n"
+        "Отправь мне прямо сейчас сообщение (текст, фото, видео, голосовое, кружок, документ) — я разошлю его всем юзерам.\n\n"
+        f"👥 Получателей в базе: <b>{users_count}</b>\n\n"
+        "<i>Нажми кнопку ниже для отмены или отправь /cancel.</i>",
         reply_markup=kb, parse_mode=ParseMode.HTML
     )
 
 async def broadcast_cancel_cb(cb: CallbackQuery):
     BROADCAST_PENDING.discard(cb.from_user.id)
     await cb.answer("Отменено")
-    await safe_edit(cb, "❌ Рассылка отменена", campus_kb(cb.from_user.id))
+    kb = admin_kb() if is_admin(cb.from_user.id) else campus_kb(cb.from_user.id)
+    await safe_edit(cb, "❌ Рассылка отменена", kb)
 
 async def broadcast_content_handler(message: Message):
-    if message.from_user.id != ADMIN_ID or message.from_user.id not in BROADCAST_PENDING:
+    if not is_admin(message.from_user.id) or message.from_user.id not in BROADCAST_PENDING:
         return
     # если это команда - не считаем контентом (кроме /cancel)
     if message.text and message.text.startswith("/"):
         if message.text.strip() == "/cancel":
             BROADCAST_PENDING.discard(message.from_user.id)
-            await message.answer("❌ Рассылка отменена")
+            await message.answer("❌ Рассылка отменена", reply_markup=admin_kb())
             return
         return
     BROADCAST_PENDING.discard(message.from_user.id)
     data = _load_stats()
-    users = list(data["users"].keys())
+    users = list(data.get("users", {}).keys())
     if not users:
-        await message.answer("📭 База пуста, некому слать.")
+        await message.answer("📭 База пользователей пуста, некому слать.", reply_markup=admin_kb())
         return
-    await message.answer(f"📢 Начинаю рассылку на <b>{len(users)}</b> юзеров...", parse_mode=ParseMode.HTML)
+    status_msg = await message.answer(f"📢 Начинаю рассылку на <b>{len(users)}</b> пользователей...", parse_mode=ParseMode.HTML)
     sent = 0
     failed = 0
-    # показываем прогресс каждые 20
+    # показываем прогресс каждые 25
     for idx, uid in enumerate(users, 1):
         try:
             await message.bot.copy_message(chat_id=int(uid), from_chat_id=message.chat.id, message_id=message.message_id)
@@ -478,9 +589,16 @@ async def broadcast_content_handler(message: Message):
         await asyncio.sleep(0.05)
         if idx % 25 == 0:
             try:
-                await message.bot.send_message(ADMIN_ID, f"⏳ Прогресс: {idx}/{len(users)}")
+                await status_msg.edit_text(f"⏳ Прогресс: <b>{idx}/{len(users)}</b>", parse_mode=ParseMode.HTML)
             except: pass
-    await message.answer(f"✅ <b>Рассылка завершена</b>\nОтправлено: <b>{sent}</b>\nОшибок: <b>{failed}</b>", parse_mode=ParseMode.HTML)
+    await message.answer(
+        f"✅ <b>Рассылка завершена!</b>\n\n"
+        f"📨 Успешно отправлено: <b>{sent}</b>\n"
+        f"❌ Ошибок / заблокировали: <b>{failed}</b>\n"
+        f"👥 Всего в базе: <b>{len(users)}</b>",
+        reply_markup=admin_kb(),
+        parse_mode=ParseMode.HTML
+    )
 
 async def cmd_schedule(message: Message):
     _log_start(message.from_user)
@@ -492,11 +610,12 @@ def main():
         return
     bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     dp = Dispatcher()
+    dp.message.register(admin_cmd, Command("admin"))
     dp.message.register(broadcast_cmd, Command("broadcast"))
     dp.message.register(broadcast_cmd, Command("sendall"))
     dp.message.register(broadcast_cmd, Command("announce"))
     dp.message.register(broadcast_cmd, Command("rassilka"))
-    dp.message.register(broadcast_content_handler, lambda m: m.from_user and m.from_user.id == ADMIN_ID and m.from_user.id in BROADCAST_PENDING)
+    dp.message.register(broadcast_content_handler, lambda m: m.from_user and is_admin(m.from_user.id) and m.from_user.id in BROADCAST_PENDING)
     dp.message.register(start_handler, CommandStart())
     dp.message.register(cmd_schedule, Command("schedule"))
     dp.message.register(cmd_schedule, Command("rasp"))
@@ -506,6 +625,9 @@ def main():
     dp.message.register(stats_cmd, Command("stat"))
     dp.callback_query.register(about_handler, F.data == "about")
     dp.callback_query.register(bells_handler, F.data == "bells")
+    dp.callback_query.register(admin_panel_handler, F.data == "admin_panel")
+    dp.callback_query.register(admin_broadcast_cb, F.data == "admin_broadcast")
+    dp.callback_query.register(admin_clear_cache_cb, F.data == "admin_clear_cache")
     dp.callback_query.register(stats_handler, F.data == "stats")
     dp.callback_query.register(broadcast_cancel_cb, F.data == "broadcast_cancel")
     dp.callback_query.register(campus_cb, F.data.startswith("campus:"))
@@ -517,7 +639,7 @@ def main():
     print("Bot started. Waiting /start")
 
     async def runner():
-        # запускаем healthcheck паралельно с ботом (для Render)
+        # запускаем healthcheck параллельно с ботом (для Render)
         asyncio.create_task(healthcheck_server())
         await dp.start_polling(bot)
 
